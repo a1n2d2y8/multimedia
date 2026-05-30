@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+
+# Dataset
+processed_data/
+processed_data.zip
+
+# PDF
+Final_Hand_Gesture_specs.pdf
+
+# Model file
+hand_landmarker.task

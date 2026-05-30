@@ -81,7 +81,7 @@ def main():
     criterion = nn.CrossEntropyLoss(class_weights)
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
     
-    os.makedirs("model_checkpoints", exist_ok=True)
+    os.makedirs("model", exist_ok=True)
     
     # 2.選擇validation set中「總分」最大者當成best
     best_val_score = -float('inf')
@@ -152,7 +152,7 @@ def main():
         # 只在「總分」破紀錄時才覆蓋存檔
         if total_score > best_val_score:
             best_val_score = total_score
-            torch.save(model.state_dict(), "model_checkpoints/best_model.pth")
+            torch.save(model.state_dict(), "model/best_model.pth")
             print(f"=> 恭喜！發現更高分的模型 (新高分: {total_score} / {max_possible_score})，已存檔！")
             
 if __name__ == '__main__':

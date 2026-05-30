@@ -5,7 +5,7 @@ import torch.nn as nn
 import torchvision.models as models
 import torchvision.transforms as transforms
 from PIL import Image
-
+import cv2
 # ---------------------------------------------------------
 # 模型架構
 # ---------------------------------------------------------
@@ -60,11 +60,11 @@ class DualInputClassifier(nn.Module):
 # ---------------------------------------------------------
 # 2. 全域初始化：載入模型與設定
 # ---------------------------------------------------------
-device = torch.device("cuda") 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
 model = DualInputClassifier().to(device)
 
 # 讀取相對路徑下的權重 
-weights_path = os.path.join(os.path.dirname(__file__), 'model_checkpoints', 'best_model.pth')
+weights_path = 'model/best_model.pth'
 model.load_state_dict(torch.load(weights_path, map_location=device))
 model.eval()
 
@@ -88,7 +88,6 @@ def predict(cropped_img: np.ndarray, landmarks: np.ndarray) -> int:
     try:
             
         # 影像轉換
-        import cv2
         img_resized = cv2.resize(cropped_img, (128, 128), interpolation=cv2.INTER_AREA)
         img_pil = Image.fromarray(img_resized)
         img_tensor = transform(img_pil).unsqueeze(0).to(device)

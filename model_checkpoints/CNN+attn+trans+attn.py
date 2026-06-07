@@ -1,13 +1,6 @@
-import numpy as np
 import torch
 import torch.nn as nn
-import torchvision.transforms as transforms
-from PIL import Image
-import cv2
-from pathlib import Path
-# ---------------------------------------------------------
-# 模型架構
-# ---------------------------------------------------------
+
 class DualInputClassifier(nn.Module):
     def __init__(self, num_classes=6):
         super(DualInputClassifier, self).__init__()
@@ -63,20 +56,101 @@ class DualInputClassifier(nn.Module):
         )
 
     def forward(self, img, landmarks):
-        # 1. 影像萃取
+        # 1. 影像特徵 (Batch, 64)
         img_feat = self.image_extractor(img)
         
-        # 2. 座標萃取
+        # 2. 座標特徵，注意這裡必須輸出 (Batch, 21, 64)，不要做 Pooling
         batch_size = landmarks.size(0)
         landmarks_graph = landmarks.view(batch_size, 21, 2)
-        # 👇 直接通過 Transformer
-        lm_feat = self.landmark_extractor(landmarks_graph) 
+        lm_feat_seq = self.landmark_extractor(landmarks_graph) 
         
-        # 3. 融合輸出
-        combined_feat = torch.cat((img_feat, lm_feat), dim=1)
-        out = self.classifier(combined_feat)
+        # 3. 交叉注意力融合 (Image 當 Q, Landmark 當 K,V)
+        # 輸出會是 (Batch, 64) 的高階融合特徵
+        fused_feat = self.fusion_module(img_feat, lm_feat_seq)
+        
+        # 4. 最終分類 (這裡分類器的 input_dim 要改成 64，而不是原本的 128)
+        out = self.classifier(fused_feat)
         return out
     
+class GraphConvolution(nn.Module):
+    """基礎的圖卷積層"""
+    def __init__(self, in_features, out_features):
+        super(GraphConvolution, self).__init__()
+        self.weight = nn.Parameter(torch.FloatTensor(in_features, out_features))
+        self.bias = nn.Parameter(torch.FloatTensor(out_features))
+        nn.init.xavier_uniform_(self.weight)
+        nn.init.zeros_(self.bias)
+
+    def forward(self, x, adj):
+        # x: (Batch, 21, in_features)
+        # adj: (21, 21)
+        support = torch.matmul(x, self.weight)
+        # 沿著骨架連接關係傳遞特徵
+        output = torch.matmul(adj, support)
+        return output + self.bias
+
+class HandGCNExtractor(nn.Module):
+    """手部專用 GCN 特徵萃取器"""
+    def __init__(self, in_features=2, hidden_dim=32, out_features=64):
+        super(HandGCNExtractor, self).__init__()
+        
+        self.gcn1 = GraphConvolution(in_features, hidden_dim)
+        self.bn1 = nn.BatchNorm1d(hidden_dim)
+        self.gcn2 = GraphConvolution(hidden_dim, out_features)
+        self.bn2 = nn.BatchNorm1d(out_features)
+        self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout(0.2)
+        
+        # 註冊鄰接矩陣為 buffer，這樣它會隨著模型自動存檔與移動 (CPU/GPU)
+        self.register_buffer('adj', self._build_adjacency_matrix())
+
+    def _build_adjacency_matrix(self):
+        # MediaPipe 手部 21 節點的物理連接 (Edges)
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 4),        # 大拇指
+            (0, 5), (5, 6), (6, 7), (7, 8),        # 食指
+            (0, 9), (9, 10), (10, 11), (11, 12),   # 中指
+            (0, 13), (13, 14), (14, 15), (15, 16), # 無名指
+            (0, 17), (17, 18), (18, 19), (19, 20), # 小拇指
+            (5, 9), (9, 13), (13, 17)              # 手掌內部橫向連接 (強化掌心結構)
+        ]
+        
+        A = torch.zeros(21, 21)
+        for i, j in edges:
+            A[i, j] = 1.0
+            A[j, i] = 1.0
+        A += torch.eye(21) # 加上 Self-loops (讓節點也保留自己的特徵)
+
+        # 對稱正規化 (Symmetric Normalization): D^{-1/2} * A * D^{-1/2}
+        D = torch.sum(A, dim=1)
+        D_inv_sqrt = torch.pow(D, -0.5)
+        D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.
+        D_mat_inv_sqrt = torch.diag(D_inv_sqrt)
+        A_norm = torch.matmul(torch.matmul(D_mat_inv_sqrt, A), D_mat_inv_sqrt)
+        
+        return A_norm
+
+    def forward(self, x):
+        # x 原始 shape: (Batch, 21, 2)
+        
+        # Layer 1
+        x = self.gcn1(x, self.adj)
+        x = x.transpose(1, 2) # BatchNorm1d 需要 shape 為 (Batch, Features, Nodes)
+        x = self.bn1(x)
+        x = x.transpose(1, 2)
+        x = self.relu(x)
+        x = self.dropout(x)
+        
+        # Layer 2
+        x = self.gcn2(x, self.adj)
+        x = x.transpose(1, 2)
+        x = self.bn2(x)
+        x = x.transpose(1, 2)
+        x = self.relu(x)
+        
+        # 全局平均池化 (Global Average Pooling)：把 21 個節點的特徵壓縮成一個 64 維的向量
+        x = torch.mean(x, dim=1) 
+        return x
 class ChannelAttention(nn.Module):
     def __init__(self, in_planes, ratio=8):
         super(ChannelAttention, self).__init__()
@@ -174,67 +248,54 @@ class HandTransformerExtractor(nn.Module):
         x = torch.mean(x, dim=1)  # shape: (Batch, d_model)
         
         return x
-# ---------------------------------------------------------
-# 2. 全域初始化：載入模型與設定
-# ---------------------------------------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
-model = DualInputClassifier().to(device)
 
-try:
-    base_dir = Path(__file__).parent
-except NameError:
-    base_dir = Path.cwd()
-weights_path = base_dir / 'model' / 'best_model.pth'
-model.load_state_dict(torch.load(weights_path, map_location=device))
-model.eval()
+class CrossAttentionFusion(nn.Module):
+    def __init__(self, embed_dim=64, num_heads=4, dropout=0.2):
+        super(CrossAttentionFusion, self).__init__()
+        
+        # 核心：多頭交叉注意力機制
+        # batch_first=True 讓輸入形狀為 (Batch, Seq, Feature)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=embed_dim, 
+            num_heads=num_heads, 
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        # Layer Normalization 幫助收斂
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        
+        # FFN (前饋神經網路)，進一步轉換融合後的特徵
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 2, embed_dim)
+        )
 
-# 影像預處理 (必須跟訓練時的 transform 一致)
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
-# ---------------------------------------------------------
-# 3. Predict 
-# ---------------------------------------------------------
-def predict(cropped_img: np.ndarray, landmarks: np.ndarray) -> int:
-    """
-    Args:
-        cropped_img: RGB image array (H, W, 3)
-        landmarks: numpy array shape (21, 2)
-    Returns:
-        final_decision_class: int {0,1,2,3,4,5}
-    """
-    try:
-            
-        # 影像轉換
-        img_resized = cv2.resize(cropped_img, (128, 128), interpolation=cv2.INTER_AREA)
-        img_pil = Image.fromarray(img_resized)
-        img_tensor = transform(img_pil).unsqueeze(0).to(device)
+    def forward(self, img_feat, lm_feat_seq):
+        # 輸入形狀確認：
+        # img_feat: (Batch, 64) -> 這是整張影像的全局特徵
+        # lm_feat_seq: (Batch, 21, 64) -> 這是 21 個節點各自的特徵
         
-        # landmark座標平移
-        norm_landmarks = landmarks.copy().astype(np.float32)
-        wrist = norm_landmarks[0].copy()
+        # 1. 準備 Q, K, V
+        # 將 Image 增加一個序列維度，變成 (Batch, 1, 64) 作為 Query
+        Q = img_feat.unsqueeze(1) 
+        K = lm_feat_seq
+        V = lm_feat_seq
         
-        # 1. 平移：將手腕變成 (0, 0)
-        norm_landmarks = norm_landmarks - wrist
+        # 2. 進行 Cross-Attention
+        # attn_output 形狀會是 (Batch, 1, 64)
+        attn_output, attn_weights = self.cross_attn(Q, K, V)
         
-        # 2. 縮放：壓縮到 -1.0 ~ 1.0 之間
-        max_val = np.max(np.abs(norm_landmarks))
-        if max_val > 0:
-            norm_landmarks = norm_landmarks / max_val
+        # 3. 殘差連接與正規化 (Add & Norm)
+        # 把原始的影像特徵加回去，確保基本盤資訊不流失
+        x = self.norm1(Q + attn_output)
         
-        # 座標轉換：使用正規化後的 norm_landmarks 攤平成 42 維
-        lm_tensor = torch.tensor(norm_landmarks.flatten(), dtype=torch.float32).unsqueeze(0).to(device)
+        # 4. FFN 與第二次殘差
+        ffn_output = self.ffn(x)
+        out = self.norm2(x + ffn_output)
         
-        # 推論
-        with torch.no_grad():
-            outputs = model(img_tensor, lm_tensor)
-            probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
-            
-        predicted_class = int(np.argmax(probs))
-
-        return predicted_class
-        
-    except Exception as e:
-        return 0
+        # 5. 壓平回 1D 向量 (Batch, 64) 交給最後的分類器
+        return out.squeeze(1)

@@ -21,7 +21,7 @@ class GestureDataset(Dataset):
             
             # 對 N/A 進行欠採樣：
             # 設定 N/A 的數量等於「目標類別總和」的X倍
-            sample_size = int(target_count) 
+            sample_size = int(target_count* 2.0) 
             
             # 如果 N/A 本來就比 sample_size 少，就全拿；否則隨機抽樣
             if len(df_na) > sample_size:

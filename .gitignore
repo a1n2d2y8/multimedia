@@ -10,3 +10,6 @@ Final_Hand_Gesture_specs.pdf
 
 # Model file
 hand_landmarker.task
+
+#python
+fw.py

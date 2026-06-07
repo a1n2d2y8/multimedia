@@ -1,13 +1,6 @@
-import numpy as np
 import torch
 import torch.nn as nn
-import torchvision.transforms as transforms
-from PIL import Image
-import cv2
-from pathlib import Path
-# ---------------------------------------------------------
-# 模型架構
-# ---------------------------------------------------------
+
 class DualInputClassifier(nn.Module):
     def __init__(self, num_classes=6):
         super(DualInputClassifier, self).__init__()
@@ -174,67 +167,3 @@ class HandTransformerExtractor(nn.Module):
         x = torch.mean(x, dim=1)  # shape: (Batch, d_model)
         
         return x
-# ---------------------------------------------------------
-# 2. 全域初始化：載入模型與設定
-# ---------------------------------------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
-model = DualInputClassifier().to(device)
-
-try:
-    base_dir = Path(__file__).parent
-except NameError:
-    base_dir = Path.cwd()
-weights_path = base_dir / 'model' / 'best_model.pth'
-model.load_state_dict(torch.load(weights_path, map_location=device))
-model.eval()
-
-# 影像預處理 (必須跟訓練時的 transform 一致)
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
-# ---------------------------------------------------------
-# 3. Predict 
-# ---------------------------------------------------------
-def predict(cropped_img: np.ndarray, landmarks: np.ndarray) -> int:
-    """
-    Args:
-        cropped_img: RGB image array (H, W, 3)
-        landmarks: numpy array shape (21, 2)
-    Returns:
-        final_decision_class: int {0,1,2,3,4,5}
-    """
-    try:
-            
-        # 影像轉換
-        img_resized = cv2.resize(cropped_img, (128, 128), interpolation=cv2.INTER_AREA)
-        img_pil = Image.fromarray(img_resized)
-        img_tensor = transform(img_pil).unsqueeze(0).to(device)
-        
-        # landmark座標平移
-        norm_landmarks = landmarks.copy().astype(np.float32)
-        wrist = norm_landmarks[0].copy()
-        
-        # 1. 平移：將手腕變成 (0, 0)
-        norm_landmarks = norm_landmarks - wrist
-        
-        # 2. 縮放：壓縮到 -1.0 ~ 1.0 之間
-        max_val = np.max(np.abs(norm_landmarks))
-        if max_val > 0:
-            norm_landmarks = norm_landmarks / max_val
-        
-        # 座標轉換：使用正規化後的 norm_landmarks 攤平成 42 維
-        lm_tensor = torch.tensor(norm_landmarks.flatten(), dtype=torch.float32).unsqueeze(0).to(device)
-        
-        # 推論
-        with torch.no_grad():
-            outputs = model(img_tensor, lm_tensor)
-            probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
-            
-        predicted_class = int(np.argmax(probs))
-
-        return predicted_class
-        
-    except Exception as e:
-        return 0

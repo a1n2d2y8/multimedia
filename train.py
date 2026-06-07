@@ -54,8 +54,8 @@ def main():
     
     # 參數設定
     BATCH_SIZE = 64
-    EPOCHS = 5
-    LR = 0.001
+    EPOCHS = 10
+    LR = 0.001 
     
     # 準備 Dataset 與 DataLoader
     csv_path = "processed_data/dataset_index.csv"
@@ -76,9 +76,10 @@ def main():
     
     model = DualInputClassifier().to(device)
     
+        
     # 1. 訓練時：使用標準的 CrossEntropyLoss，確保梯度穩定
     class_weights = torch.tensor([1.0, 5.0, 5.0, 5.0, 5.0, 5.0]).to(device)
-    criterion = nn.CrossEntropyLoss(class_weights)
+    criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
     
     os.makedirs("model", exist_ok=True)

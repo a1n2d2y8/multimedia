@@ -8,45 +8,6 @@ from tqdm import tqdm
 from dataset import GestureDataset
 from model import DualInputClassifier
 
-# 自定義Loss   目前不使用
-class ScorePenaltyLoss(nn.Module):
-    def __init__(self, device):
-        super().__init__()
-        self.ce_loss = nn.CrossEntropyLoss()
-        
-        # 定義 6x6 的矩陣 [真實類別][預測類別]
-        penalty = torch.zeros(6, 6)
-        for i in range(6):
-            for j in range(6):
-                if i == j:
-                    penalty[i][j] = 0.0 # 預測正確
-                elif i == 0 and j > 0:
-                    penalty[i][j] = 2.0 # GT: NA -> Pred: 1~5 
-                elif i > 0 and j != i:
-                    if j == 0:
-                        penalty[i][j] = 2.0 # GT: 1~5 -> Pred: NA 
-                    else:
-                        penalty[i][j] = 2.5 # GT: 1~5 -> Pred: wrong 1~5 
-                        
-        self.penalty = penalty.to(device)
-
-    def forward(self, logits, targets):
-        # 1. 基本的交叉熵 (確保基礎特徵學習穩定)
-        base_loss = self.ce_loss(logits, targets)
-        
-        # 2. 計算模型對每個類別的預測機率 (Softmax)
-        probs = torch.softmax(logits, dim=1)
-        
-        # 3. 根據 Targets 取出對應的懲罰權重
-        # batch_penalties shape: [batch_size, 6]
-        batch_penalties = self.penalty[targets] 
-        
-        # 4. 期望懲罰 = 機率 * 懲罰權重 的總和
-        expected_penalty = torch.sum(probs * batch_penalties, dim=1).mean()
-        
-        # 結合兩者 (可調整 0.5 這個超參數，目前先設 1.0 加強懲罰)
-        return base_loss + 1.0 * expected_penalty
-
 # 訓練
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -148,13 +109,13 @@ def main():
                         
         avg_val_loss = val_loss / len(val_loader)
         
-        print(f"\nEpoch {epoch+1} Results: Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | ★ 競賽總分: {total_score} / {max_possible_score}")
+        print(f"\nEpoch {epoch+1} Results: Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | 競賽總分: {total_score} / {max_possible_score}")
         print(cnt)
         # 只在「總分」破紀錄時才覆蓋存檔
         if total_score > best_val_score:
             best_val_score = total_score
             torch.save(model.state_dict(), "model/best_model.pth")
-            print(f"=> 恭喜！發現更高分的模型 (新高分: {total_score} / {max_possible_score})，已存檔！")
+            print(f"=> (新高分: {total_score} / {max_possible_score})")
             
 if __name__ == '__main__':
     main()

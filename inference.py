@@ -24,7 +24,7 @@ class DualInputClassifier(nn.Module):
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            CBAMBlock(32),  # 👈 第一道注意力防線：篩選初階邊緣/紋理
+            CBAMBlock(32), 
 
             # Block 3
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),
@@ -35,7 +35,7 @@ class DualInputClassifier(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            CBAMBlock(64),  # 👈 第二道注意力防線：聚焦高階手勢語意
+            CBAMBlock(64), 
 
             # 全局池化壓縮
             nn.AdaptiveAvgPool2d((1, 1)),
@@ -43,8 +43,7 @@ class DualInputClassifier(nn.Module):
         )
         img_feature_dim = 64
         
-        # --- 座標分支 (換成 Transformer) --- 
-        # 👇 替換成新的 Transformer 萃取器
+        # --- 座標分支 (Transformer) --- 
         self.landmark_extractor = HandTransformerExtractor(
             in_features=2, 
             d_model=64, 
@@ -69,7 +68,7 @@ class DualInputClassifier(nn.Module):
         # 2. 座標萃取
         batch_size = landmarks.size(0)
         landmarks_graph = landmarks.view(batch_size, 21, 2)
-        # 👇 直接通過 Transformer
+        # 通過 Transformer
         lm_feat = self.landmark_extractor(landmarks_graph) 
         
         # 3. 融合輸出
@@ -233,7 +232,8 @@ def predict(cropped_img: np.ndarray, landmarks: np.ndarray) -> int:
             probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
             
         predicted_class = int(np.argmax(probs))
-
+        # confidence = probs[predicted_class]
+                
         return predicted_class
         
     except Exception as e:

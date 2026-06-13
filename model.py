@@ -17,7 +17,7 @@ class DualInputClassifier(nn.Module):
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            CBAMBlock(32),  # 👈 第一道注意力防線：篩選初階邊緣/紋理
+            CBAMBlock(32), 
 
             # Block 3
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),
@@ -28,26 +28,26 @@ class DualInputClassifier(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            CBAMBlock(64),  # 👈 第二道注意力防線：聚焦高階手勢語意
+            CBAMBlock(64), 
 
             # 全局池化壓縮
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten()
         )
+        img_feature_dim = 64
         
-        # --- 座標分支 (換成 Transformer) --- 
-        # 👇 替換成新的 Transformer 萃取器
+        # --- 座標分支 (Transformer) --- 
         self.landmark_extractor = HandTransformerExtractor(
             in_features=2, 
             d_model=64, 
             nhead=4, 
             num_layers=2
         )
-        self.fusion_module = CrossAttentionFusion(embed_dim=64, num_heads=4, dropout=0.2)
+        lm_feature_dim = 64
         
         # --- 融合與分類器 (保持不變) ---
         self.classifier = nn.Sequential(
-            nn.Linear(64, 128),
+            nn.Linear(img_feature_dim + lm_feature_dim, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
@@ -55,22 +55,20 @@ class DualInputClassifier(nn.Module):
         )
 
     def forward(self, img, landmarks):
-        # 1. 影像特徵 (Batch, 64)
+        # 1. 影像萃取
         img_feat = self.image_extractor(img)
         
-        # 2. 座標特徵，注意這裡必須輸出 (Batch, 21, 64)，不要做 Pooling
+        # 2. 座標萃取
         batch_size = landmarks.size(0)
         landmarks_graph = landmarks.view(batch_size, 21, 2)
-        lm_feat_seq = self.landmark_extractor(landmarks_graph) 
+        # 通過 Transformer
+        lm_feat = self.landmark_extractor(landmarks_graph) 
         
-        # 3. 交叉注意力融合 (Image 當 Q, Landmark 當 K,V)
-        # 輸出會是 (Batch, 64) 的高階融合特徵
-        fused_feat = self.fusion_module(img_feat, lm_feat_seq)
-        
-        # 4. 最終分類 (這裡分類器的 input_dim 要改成 64，而不是原本的 128)
-        out = self.classifier(fused_feat)
+        # 3. 融合輸出
+        combined_feat = torch.cat((img_feat, lm_feat), dim=1)
+        out = self.classifier(combined_feat)
         return out
-
+    
 class ChannelAttention(nn.Module):
     def __init__(self, in_planes, ratio=8):
         super(ChannelAttention, self).__init__()
@@ -162,57 +160,9 @@ class HandTransformerExtractor(nn.Module):
         
         # 進入 Transformer 進行 Self-Attention 計算
         x = self.transformer(x)  # shape: (Batch, 21, d_model)
-
+        
+        # 全局平均池化 (Global Average Pooling)
+        # 將 21 個節點的特徵壓縮成一個 d_model 維度的向量，準備與影像特徵融合
+        x = torch.mean(x, dim=1)  # shape: (Batch, d_model)
         
         return x
-
-class CrossAttentionFusion(nn.Module):
-    def __init__(self, embed_dim=64, num_heads=4, dropout=0.2):
-        super(CrossAttentionFusion, self).__init__()
-        
-        # 核心：多頭交叉注意力機制
-        # batch_first=True 讓輸入形狀為 (Batch, Seq, Feature)
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=embed_dim, 
-            num_heads=num_heads, 
-            dropout=dropout,
-            batch_first=True
-        )
-        
-        # Layer Normalization 幫助收斂
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
-        
-        # FFN (前饋神經網路)，進一步轉換融合後的特徵
-        self.ffn = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(embed_dim * 2, embed_dim)
-        )
-
-    def forward(self, img_feat, lm_feat_seq):
-        # 輸入形狀確認：
-        # img_feat: (Batch, 64) -> 這是整張影像的全局特徵
-        # lm_feat_seq: (Batch, 21, 64) -> 這是 21 個節點各自的特徵
-        
-        # 1. 準備 Q, K, V
-        # 將 Image 增加一個序列維度，變成 (Batch, 1, 64) 作為 Query
-        Q = img_feat.unsqueeze(1) 
-        K = lm_feat_seq
-        V = lm_feat_seq
-        
-        # 2. 進行 Cross-Attention
-        # attn_output 形狀會是 (Batch, 1, 64)
-        attn_output, attn_weights = self.cross_attn(Q, K, V)
-        
-        # 3. 殘差連接與正規化 (Add & Norm)
-        # 把原始的影像特徵加回去，確保基本盤資訊不流失
-        x = self.norm1(Q + attn_output)
-        
-        # 4. FFN 與第二次殘差
-        ffn_output = self.ffn(x)
-        out = self.norm2(x + ffn_output)
-        
-        # 5. 壓平回 1D 向量 (Batch, 64) 交給最後的分類器
-        return out.squeeze(1)

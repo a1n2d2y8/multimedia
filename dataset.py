@@ -8,7 +8,7 @@ import torchvision.transforms as transforms
 
 class GestureDataset(Dataset):
     def __init__(self, csv_path, img_dir, is_train=True):
-        # 1. 讀取完整的資料
+        # 讀取資料
         full_data = pd.read_csv(csv_path)
         
         if is_train:
@@ -23,7 +23,6 @@ class GestureDataset(Dataset):
             # 設定 N/A 的數量等於「目標類別總和」的X倍
             sample_size = int(target_count* 2.0) 
             
-            # 如果 N/A 本來就比 sample_size 少，就全拿；否則隨機抽樣
             if len(df_na) > sample_size:
                 df_na_sampled = df_na.sample(n=sample_size, random_state=42)
             else:
@@ -72,17 +71,15 @@ class GestureDataset(Dataset):
         lm_cols = [f'lm_{i}' for i in range(42)]
         landmarks = row[lm_cols].values.astype(np.float32)
         
-        # --- 正規化 ---
-        # MediaPipe 的第 0 個點 (x0, y0) 是手腕 (Wrist)
+        # 手腕 (x0, y0)
         wrist_x = landmarks[0]
         wrist_y = landmarks[1]
         
-        # 1. 將所有點平移，讓手腕變成 (0, 0)
-        landmarks[0::2] -= wrist_x  # 所有 X 座標減去手腕 X
-        landmarks[1::2] -= wrist_y  # 所有 Y 座標減去手腕 Y
+        # 步驟 1：將所有點平移，讓手腕變成 (0, 0)
+        landmarks[0::2] -= wrist_x  
+        landmarks[1::2] -= wrist_y  
         
-        # 2. 找出最大的絕對數值來做 Scaling
-        # 確保所有座標都被完美壓縮在 -1.0 到 1.0 之間，且不破壞幾何形狀
+        # Scaling
         max_val = np.max(np.abs(landmarks))
         if max_val > 0:
             landmarks = landmarks / max_val

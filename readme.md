@@ -27,6 +27,6 @@ test會先把圖片做前處理成128x128 + landmarks，然後再使用inference
 3. 執行tes.py進行測試
 
 ### 其他
-- 其他的model.py架構存在model資料夾下
-- 測試時，inference.py裡面的DualInputClassifier必須要和訓練best model時的架構一樣。
-- 每一次執行新的train.py，model_checkpoints裡面原有的model會被覆蓋掉。
+- 其他的model.py架構存在model_checkpoints資料夾下
+- 測試時，inference.py裡面的DualInputClassifier必須要和訓練model時的架構一樣。
+- 每一次執行新的train.py，model資料夾裡面原有的model會被覆蓋掉。
